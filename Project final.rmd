@@ -1,0 +1,897 @@
+---
+title: "STAT 5003 :Report - Project 2 by Group 16"
+author:  "Vaibhav Srivastava,  Mengsha Liu, Hao Ye, Amandeep Kaur Randhawa , JianXiong Zhang"
+date: "30 October 2018"
+output: html_document
+---
+
+#Project 
+### Kinase-substrate prediction using phosphoproteomics datasets
+###In this project, we will aim to apply classification technique for predicting novel kinase-substrates. A key goal is to identify the set of kinases and their corresponding substrates that underlie key signalling events over a course of time.It was found through a prior research that Akt and mTOR substrates are of interest and relevant to insulin-activated phosphoprotemics data.A total of 22 and 26 subtrates for Akt and mTOR respectively were identified and used as positive instances for model traning in subsequent analysis.We studied the behaviour of the proposed positive -unlabeled ensemble approach using simulation on synthetic datasets and subsequently applies it to predict substrates of kinases Akt and mTOR. 
+
+# Initial Data extraction of Input Files
+## Read Directly from txt Files provided in Project 2
+#1.Prepare dataset
+#2.Feature selection
+#3.Classification
+#4.Performance analystic
+
+1. Prepare dataset
+
+```{r}
+#setwd("E:/Rtutorials/Data_Project_2/Data_Project_2/Datasets")
+PhosphoMain <- read.delim("InsulinPhospho.txt", header =TRUE)
+# load Akt label
+Akt_substrates <- read.delim("Akt_substrates.txt", header =FALSE)
+# load mTOR label
+mTOR_substrates <- read.delim("mTOR_substrates.txt", header =FALSE)
+
+```
+
+## Merge Input Data Files using R functions
+
+```{r}
+maindata <- PhosphoMain
+akt.data <- Akt_substrates
+mTOR.data <- mTOR_substrates
+join.cols <- maindata[,c(1,4)]
+
+# Merge
+akt.data <- merge(akt.data, join.cols, by.x = "V1", by.y = "Identifier")
+mTOR.data <- merge(mTOR.data, join.cols, by.x = "V1", by.y = "Identifier")
+
+akt.data$class <- 'Akt'
+mTOR.data$class <- 'mTOR'
+substrates <- rbind(akt.data,mTOR.data)
+
+```
+
+# install required ackages
+```{r}
+
+library(AdaSampling)
+library(caret)
+library(gplots)
+library(dplyr)
+library(class)
+
+```
+
+## Generate box Plots from the Dynamic features
+
+```{r}
+join.cols_boxplot <- PhosphoMain[,1:16]
+akt.box <- merge(Akt_substrates, join.cols_boxplot, by.x = "V1", by.y = "Identifier")
+mTOR.box <- merge(mTOR_substrates, join.cols_boxplot, by.x = "V1", by.y = "Identifier")
+
+
+#Boxplots for Akt time-course value and other features
+
+boxplot(akt.box$X15s,akt.box$X30s,akt.box$X1m,akt.box$X2m,akt.box$X5m,akt.box$X10m,akt.box$X20m,akt.box$X60m,main="Akt",names = c("15s","30s","x1m","x2m","x5m","x10m","x20m","x60m"),col = "light blue",ylab="log2 FC",xlab="Time Course")
+boxplot(akt.box$Ins.1,akt.box$Ins.2,akt.box$LY,akt.box$MK,main="Akt",names = c("Ins1","Ins2","LY","MK"),col="light green",ylab="log2 FC")
+
+#Boxplot for mTOR time-course value and other features
+
+boxplot(mTOR.box$X15s,mTOR.box$X30s,mTOR.box$X1m,mTOR.box$X2m,mTOR.box$X5m,mTOR.box$X10m,mTOR.box$X20m,mTOR.box$X60m,main="mTOR",names = c("15s","30s","x1m","x2m","x5m","x10m","x20m","x60m"),col = "red",ylab="log2 FC",xlab="Time Course")
+boxplot(mTOR.box$Ins.1,mTOR.box$Ins.2,mTOR.box$LY,mTOR.box$MK,main="mTOR",names = c("Ins1","Ins2","LY","MK"),col="yellow",ylab="log2 FC")
+
+```
+
+#Feature Engineering - Static Feature extraction from a specific variable 'Seq Window'
+
+### A position weight matrix (PWM), also known as a position-specific weight matrix (PSWM) or position-specific scoring matrix (PSSM), is a commonly used representation of motifs (patterns) in biological sequences.PWMs are often derived from a set of aligned sequences that are thought to be functionally related.PWMs are often derived from a set of aligned sequences that are thought to be functionally related .
+###Conversion of sequence to position probability matrix
+### Refer https://en.wikipedia.org/wiki/Position_weight_matrix
+
+
+### Motif Score funtion to split letters from Sequence
+
+```{r}
+findseq <- function(substrate, PhosphoMain){
+  for(i in 1:nrow(PhosphoMain)){
+    if (as.character(PhosphoMain[i,1]) == as.character(substrate)){
+      seq <- strsplit(as.character(PhosphoMain[i,2]),"")[[1]]
+      return(seq);
+      break;
+    }
+  }
+}
+```
+
+# Calculate Motif Score for aKT 
+## Reference https://cran.r-project.org/web/packages/protr/vignettes/protr.html
+### Refer details for Amino Acid Composition Descriptor
+
+```{r}
+PSSM.Akt <- matrix(0, nrow = 20, ncol = 13)
+count <- 0
+str=c("a","r","n","d","c","e","q","g","h","i","l","k","m","f","p","s","t","w","y","v")
+for(i in 1:nrow(Akt_substrates)){
+  PSSM <- findseq(Akt_substrates[i,],PhosphoMain)
+  
+  for(i in 1:length(PSSM)){
+    for (j in 1:length(str)){
+       if (sapply(PSSM[i],tolower)== str[j])
+      { PSSM.Akt[j,i] <- PSSM.Akt[j,i] + 1  }
+      
+            }
+         }
+  
+ 
+}
+
+```
+
+```{r}
+motifscore.Akt <- c()
+str=c("a","r","n","d","c","e","q","g","h","i","l","k","m","f","p","s","t","w","y","v")
+for(i in 1:nrow(PhosphoMain)){
+  
+  score <- 0
+  PSSM<- strsplit(as.character(PhosphoMain[i,2]),"")[[1]]  
+  
+  for(i in 1:length(PSSM)){
+    
+    
+    for (j in 1:length(str)){
+       if (sapply(PSSM[i],tolower)== str[j])
+      { score <- PSSM.Akt[j,i] + score  }
+      
+            }
+         }
+  motifscore.Akt <- c(motifscore.Akt, score)
+}
+
+```
+
+
+# Calculate Motif Score for mTor
+
+```{r}
+PSSM.mtor <- matrix(0, nrow = 20, ncol = 13)
+count <- 0
+str=c("a","r","n","d","c","e","q","g","h","i","l","k","m","f","p","s","t","w","y","v")
+for(i in 1:nrow(mTOR_substrates)){
+  PSSM <- findseq(mTOR_substrates[i,],PhosphoMain)
+  
+   for(i in 1:length(PSSM)){
+    for (j in 1:length(str)){
+       if (sapply(PSSM[i],tolower)== str[j])
+      { PSSM.mtor[j,i] <- PSSM.mtor[j,i] + 1  }
+      
+            }
+         }
+  
+ 
+}
+
+
+#PPM.mtor
+PSSM.mtor <- PSSM.mtor/nrow(mTOR_substrates)
+PSSM.mtor[16,7] <- 0.5
+PSSM.mtor[17,7] <- 0.5
+
+
+```
+
+```{r}
+motifscore.mtor <- c()
+
+for(i in 1:nrow(PhosphoMain)){
+  
+  score <- 0
+  PSSM <- strsplit(as.character(PhosphoMain[i,2]),"")[[1]]  
+  str=c("a","r","n","d","c","e","q","g","h","i","l","k","m","f","p","s","t","w","y","v")
+  for(i in 1:length(PSSM)){
+    
+    
+    for (j in 1:length(str)){
+       if (sapply(PSSM[i],tolower)== str[j])
+      { score <- PSSM.mtor[j,i] + score  }
+      
+    }
+  }
+         
+  motifscore.mtor <- c(motifscore.mtor, score)
+}
+
+
+```
+
+  
+
+# Finalise Akt dataset with Motif Score added
+
+```{r}
+# remove sew window aand add Motif score
+PhosphoMain.aktdata <- cbind(PhosphoMain,  motifscore.Akt)[,-2]
+# Add class label for known AKT substrates as 1 
+PhosphoMain.aktdata<-merge(PhosphoMain.aktdata,akt.data, by.x="Identifier",by.y="V1",all=TRUE)
+PhosphoMain.aktdata$class <- ifelse(PhosphoMain.aktdata$class =="Akt", 1, 0)
+PhosphoMain.aktdata$AUC.y <-NULL
+PhosphoMain.aktdata[is.na(PhosphoMain.aktdata)] <- 0
+# Add identifer as a row label
+rownames(PhosphoMain.aktdata) <- PhosphoMain.aktdata$Identifier
+# Remove identifier from the columns so that it is not considered as a feature
+PhosphoMain.aktdata <- PhosphoMain.aktdata[,-1]
+head(PhosphoMain.aktdata)
+```
+
+# Finalise mTor dataset with Motif Score added
+
+```{r}
+# remove sew window aand add Motif score
+PhosphoMain.mtordata <- cbind(PhosphoMain,  motifscore.mtor)[,-2]
+# Add class label for known mtor substrates as 1 
+PhosphoMain.mtordata<-merge(PhosphoMain.mtordata,mTOR.data,by.x="Identifier",by.y="V1",all=TRUE)
+PhosphoMain.mtordata$class <- ifelse(PhosphoMain.mtordata$class =="mTOR", 1, 0)
+PhosphoMain.mtordata$AUC.y <-NULL
+PhosphoMain.mtordata[is.na(PhosphoMain.mtordata)] <- 0
+# Add identifer as a row label
+rownames(PhosphoMain.mtordata) <- PhosphoMain.mtordata$Identifier
+# Remove identifier from the columns so that it is not considered as a feature
+PhosphoMain.mtordata <- PhosphoMain.mtordata[,-1]
+head(PhosphoMain.mtordata)
+
+```
+
+##Motif score is derived from SeqWindow and is a static feature. It will mandatorily be used for evaluation
+##We will now consider feature selection techniques on the Dynamic Features of the dataset
+
+## Get AKT  & mtor labelled sites for feature selection (58 sites) and consider dynamic features only
+
+#2 Feature Selection 
+#2.1 Fold change
+#2.2 T-Test 
+#2.3 Wrapped forward stepwise 
+```{r}
+aktsites<-merge(maindata,Akt_substrates,by.x="Identifier",by.y="V1")
+aktsites$Class <-1
+mtorsites<-merge(maindata,mTOR_substrates,by.x="Identifier",by.y="V1")
+mtorsites$Class <-0
+act<-rbind(aktsites,mtorsites)
+act<-act[,c(-1,-2)]
+act <- as.data.frame(lapply(act, as.numeric))
+head(act)
+```
+
+```{r}
+library(caret)
+set.seed(1)
+intrain<-createDataPartition(act$Class,p=0.6)[[1]]
+trainf<-act[intrain,]
+testf<-act[-intrain,]
+```
+
+##2.1 Fold change 
+
+```{r}
+Train.byClass <- split(trainf[,-15], trainf$Class)
+feature.mean.byClass <- sapply(Train.byClass, colMeans)
+
+# calculate fold change of features by class and take the absolute of its log value
+feature.foldChange <- abs(log2(feature.mean.byClass[,1] / feature.mean.byClass[,2]))
+
+# sort the features by fold change
+feature.sorted <- sort(feature.foldChange, decreasing=TRUE)
+
+# select the top 10 features
+filtered.features1 <- names(feature.sorted)[1:8]
+filtered.features1
+
+# fitting the classifier on full expression dataset
+knn.full <- knn(train=trainf[,-15], test=testf[,-15], cl=trainf$Class, k=5, prob=TRUE)
+table(knn.full, testf$Class)
+
+knn.filtered <- knn(train=trainf[,filtered.features1], test=testf[,filtered.features1], cl=trainf$Class, k=5, prob=TRUE)
+table(knn.filtered, testf$Class)
+
+```
+#Visualise the features selected by filtering step using clustered "heatmap"
+```{r}
+
+classcolors <- sapply(as.character(trainf$Class), switch, "0"= "green3", "1" = "orange3")
+knnFiltered <- t(apply(trainf[,filtered.features1], 2, as.numeric))
+
+heatmap.2(knnFiltered, col=bluered(75), ColSideColors=classcolors, density.info="none", trace="none", na.color = "black", margins=c(8, 8), main="Clustering by top 10 filtered features", dendrogram = "column")
+```
+
+##2.2 T-Test
+
+```{r}
+Train.byClass <- split(trainf[,-15], trainf$Class)
+# perform a t-test
+feature.pvalues <- c()
+for(i in 1:(ncol(trainf)-1)) {
+  feature.pvalues <- c(feature.pvalues, t.test(Train.byClass[[1]][,i], Train.byClass[[2]][,i])$p.value)
+}
+names(feature.pvalues) <- colnames(trainf[,1:14])
+
+# filter the top 10 most discriminative features based on p-values
+filtered.features <- names(sort(feature.pvalues)[1:7])
+
+# fitting the classifier on full expression dataset
+knn.full <- knn(train=trainf[,-15], test=testf[,-15], cl=trainf$Class, k=5, prob=TRUE)
+table(knn.full, testf$Class)
+
+# fitting the classifier using top 10 filtered features by fold change
+knn.filtered <- knn(train=trainf[,filtered.features], test=testf[,filtered.features], cl=trainf$Class, k=5, prob=TRUE)
+table(knn.filtered, testf$Class)
+```
+
+#Visualise the features selected by filtering step using clustered "heatmap"
+
+```{r}
+library(gplots)
+classcolors <- sapply(as.character(trainf$Class), switch, "0"= "green3", "1" = "orange3")
+knnFiltered <- t(apply(trainf[,filtered.features], 2, as.numeric))
+
+heatmap.2(knnFiltered, col=bluered(75), ColSideColors=classcolors, density.info="none", trace="none", na.color = "black", margins=c(8, 8), main="Clustering by top 10 filtered features", dendrogram = "column")
+
+```
+
+##2.3 Wrapper - forward stepwise selection
+```{r}
+selectFeature <- function(train, test, cls.train, cls.test, features) {
+  ## identify a feature to be selected
+  current.best.accuracy <- -Inf
+  selected.i <- NULL
+  for(i in 1:ncol(train)) {
+    current.f <- colnames(train)[i]
+    if(!current.f %in% features) {
+      model <- knn(train=train[,c(features, current.f)], test=test[,c(features, current.f)], cl=cls.train, k=3)
+      test.acc <- sum(model == cls.test) / length(cls.test)
+      
+      if(test.acc > current.best.accuracy) {
+        current.best.accuracy <- test.acc
+        selected.i <- colnames(train)[i]
+      }
+    }
+  }
+  return(selected.i)
+}
+
+```
+ 
+ 
+```{r}
+set.seed(1)
+intrain<-createDataPartition(act$Class,p=0.6)[[1]]
+trainf<-act[intrain,]
+testf<-act[-intrain,]
+
+allFeatures <- colnames(act)[-15]
+
+cls.train <- act$Class[intrain]
+cls.test <- act$Class[-intrain]
+
+# use correlation to determine the first feature
+cls.train.numeric <- rep(c(0, 1), c(sum(cls.train == 1), sum(cls.train == 0)))
+features <- c()
+current.best.cor <- 0
+for(i in 1:(ncol(trainf)-1)) {
+  if(current.best.cor < abs(cor(trainf[,i], cls.train.numeric))) {
+    current.best.cor <- abs(cor(trainf[,i], cls.train.numeric))
+    features <- colnames(trainf)[i]
+  }
+}
+print(features)
+
+```
+
+```{r}
+# select the 2 to 10 best features using knn as a wrapper classifier
+for (j in 2:9) {
+  selected.i <- selectFeature(trainf[,-15], test=testf[,-15], cls.train, cls.test, features)
+  print(selected.i)
+
+  # add the best feature from current run
+  features <- c(features, selected.i)
+}
+
+```
+
+```{r}
+# fitting the classifier using Wrapper - forward stepwise selection
+knn.filtered <- knn(train=trainf[,features], test=testf[,features], cl=trainf$Class, k=5, prob=TRUE)
+table(knn.filtered, testf$Class)
+```
+## We can see that Wrapper method does not give any better results in this case
+### There is no significant change by dropping any feature and we will continue to use all dynamic features provided by Professor and Motif Score (static feature) calculated
+
+#3. Classfication
+#3.1 Classification techniques evaluation on Akt substrates
+#3.2 Classification techniques evaluation on mTOR substrates
+
+
+#3.1 Classification techniques evaluation on Akt substrates
+
+```{r}
+## Read actual class and all unllabelled samples totalling 12062 records
+dim(PhosphoMain.aktdata)
+```
+
+# First, clean up the dataset to transform into the required format.
+### All dynamic features and Motif Score is taken together for Model evaluation
+
+```{r}
+data.mat <- apply(X = PhosphoMain.aktdata[,1:15], MARGIN = 2, FUN = as.numeric)
+data.cls.truth <- sapply(X = PhosphoMain.aktdata$class, FUN = function(X) {ifelse(X == "1", 1, 0)})
+rownames(data.mat) <- rownames(PhosphoMain.aktdata)
+head(data.mat)
+
+# function created to calculate F1 score
+
+F1 <- function(mat) {
+  apply(mat, 1, function(x){
+    TN <- x[1]
+    FP <- x[2]
+    TP <- x[3]
+    FN <- x[4]
+    2*TP/(2*TP+FP+FN)
+  })
+}
+
+```
+## Create 10 folds on data set for cross validation. Every time for model evaluation 9 folds will be used for training and one fold for testing
+
+```{r}
+k <- 10
+set.seed(1)
+fold <- createFolds(data.cls.truth, k);
+
+```
+
+## Classify original dataset using svm classifier with all unlabelled samples considered as negative
+
+```{r}
+
+library(e1071)
+library(caret);
+
+# gold standard (orignal data)
+TP <- TN <- FP <- FN <- c()
+for(i in 1:length(fold)){
+    model <- svm(data.mat[-fold[[i]],], data.cls.truth[-fold[[i]]] ,prob = TRUE , kernel = "radial")
+    preds <- ifelse(predict(model, data.mat[fold[[i]],]) > 0.5, 1, 0)
+    TP <- c(TP, sum((data.cls.truth[fold[[i]]] == preds)[data.cls.truth[fold[[i]]] == "1"]))
+    TN <- c(TN, sum((data.cls.truth[fold[[i]]] == preds)[data.cls.truth[fold[[i]]] == "0"]))
+    FP <- c(FP, sum((data.cls.truth[fold[[i]]] != preds)[preds == "1"]))
+    FN <- c(FN, sum((data.cls.truth[fold[[i]]] != preds)[preds == "0"]))
+}
+mean(TP/(TP+FN))
+```
+
+## Seeing the above result we infer that SVM is very sensitive to high class imbalance and so resulted in 0 sensitivity
+
+### Positive unlabeled learning technique is  proposed for current scenario where unlabeled instances comprise of both unknown positive and negative instances [Denis et al., 2005; Li et al., 2009].
+
+### Bootstrap sampling approach is used along with wrapper-based adaptive sampling (AdaSampling) procedure.Initially all unlabeled instances are treated as negative examples and are equally likely to be selected for model training. Then AdaSampling differs from bootstrap sampling approaches in that the procedure "wraps" around a classification model and prediction uncertainties of unlabeled instances from the model are incorporated for each subsequent iterations of sampling to reduce the probability of selecting potential unknown positive instances as negative examples for model training  [Yang et al., 2017],
+
+
+# Use AdaSampling with all features 
+
+```{r}
+set.seed(1)
+pos <- which(data.cls.truth == 1)
+neg <- which(data.cls.truth == 0)
+data.cls <- data.cls.truth
+k <- 10
+fold <- createFolds(data.cls.truth, k)
+
+
+```
+
+## Create Model using  AdaSampling for positive unlabeled learning (Single Model) and evaluate dataset using Sensitivity and Specificity. Parameter C is kept as 1 for single Model
+image:![](E:/Rtutorials/Data_Project_2/Data_Project_2/Datasets/a_single.png)
+
+```{r}
+final_svm.akt_single <- c()
+TP <- TN <- FP <- FN <- c()
+TPR<-c()
+FPR<-c()
+for (i in 1:length(fold)) {
+  train.mat <- data.mat[-fold[[i]],]
+  test.mat <- data.mat[fold[[i]],]
+  cls <- data.cls[-fold[[i]]]
+  
+  # Index positive and negative instances
+  Ps <- rownames(train.mat)[which(cls == 1)]
+  Ns <- rownames(train.mat)[which(cls == 0)]
+  
+  pred.prob <- adaSample(Ps, Ns, train.mat, test.mat, classifier="svm", C=1 )
+  
+  # Decision threshold is 0.5
+  pred <- ifelse(pred.prob[,"P"] > 0.5, 1, 0)
+  final_svm.akt_single<- c(final_svm.akt_single,pred.prob[,"P"]  )
+  
+  # Evaluation Metrics
+  
+  TP <- c(TP, sum((data.cls.truth[fold[[i]]] == pred)[data.cls.truth[fold[[i]]] == "1"]))
+  TN <- c(TN, sum((data.cls.truth[fold[[i]]] == pred)[data.cls.truth[fold[[i]]] == "0"]))
+  FP <- c(FP, sum((data.cls.truth[fold[[i]]] != pred)[pred == "1"]))
+  FN <- c(FN, sum((data.cls.truth[fold[[i]]] != pred)[pred == "0"]))
+
+  # True Positve Rate
+TPR <-c(TPR,TP/(TP+FN))
+  # False Positive Rate
+FPR <-c(FPR,FP/(FP+TN))
+  
+}
+
+sensitivity_svm<-mean(TP/(TP+FN))
+specificity_svm<-mean(TN/(TN+FP))
+Precision_svm  <-mean(TP/(TP+FP))
+F1_Score_svm   <-mean(F1(cbind(TN, FP, TP, FN)))
+print(paste('Overall Sensitivity calculated by AdaSample Single Model using SVM is',sensitivity_svm))
+print(paste('Overall Specificty calculated by AdaSample Single Model using SVM is',specificity_svm))
+print(paste('Overall F1-Score calculated by AdaSample Single Model using SVM is',F1_Score_svm))
+```
+
+## Create Model using  AdaSampling for ensemble learning  and evaluate dataset using Sensitivity and Specificity
+image:![](E:/Rtutorials/Data_Project_2/Data_Project_2/Datasets/a_ensemble.png)
+
+```{r}
+
+
+final_svm.akt_ensemble <- c()
+TP <- TN <- FP <- FN <- c()
+TPR<-c()
+FPR<-c()
+sensitivity_svm<-c()
+specificity_svm<-c()
+Precision_svm  <-c()
+F1_Score_svm   <-c()
+for (i in 1:length(fold)) {
+  train.mat <- data.mat[-fold[[i]],]
+  test.mat <- data.mat[fold[[i]],]
+  cls <- data.cls[-fold[[i]]]
+  
+  # Index positive and negative instances
+  Ps <- rownames(train.mat)[which(cls == 1)]
+  Ns <- rownames(train.mat)[which(cls == 0)]
+  
+  # Keep C>1 for ensemble learning
+  
+  pred.prob <- adaSample(Ps, Ns, train.mat, test.mat, classifier="svm", C=20 )
+  
+  # Decision threshold is 0.5
+  pred <- ifelse(pred.prob[,"P"] > 0.5, 1, 0)
+  final_svm.akt_ensemble<- c(final_svm.akt_ensemble,pred.prob[,"P"]  )
+  
+  # Evaluation Metrics
+  
+  TP <- c(TP, sum((data.cls.truth[fold[[i]]] == pred)[data.cls.truth[fold[[i]]] == "1"]))
+  TN <- c(TN, sum((data.cls.truth[fold[[i]]] == pred)[data.cls.truth[fold[[i]]] == "0"]))
+  FP <- c(FP, sum((data.cls.truth[fold[[i]]] != pred)[pred == "1"]))
+  FN <- c(FN, sum((data.cls.truth[fold[[i]]] != pred)[pred == "0"]))
+
+  # True Positve Rate
+TPR <-c(TPR,TP/(TP+FN))
+  # False Positive Rate
+FPR <-c(FPR,FP/(FP+TN))
+  
+}
+
+sensitivity_svm<-mean(TP/(TP+FN))
+specificity_svm<-mean(TN/(TN+FP))
+Precision_svm  <-mean(TP/(TP+FP))
+F1_Score_svm   <-mean(F1(cbind(TN, FP, TP, FN)))
+print(paste('Overall Sensitivity calculated by AdaSample Single Model using SVM is',sensitivity_svm))
+print(paste('Overall Specificty calculated by AdaSample Single Model using SVM is',specificity_svm))
+print(paste('Overall F1-Score calculated by AdaSample Single Model using SVM is',F1_Score_svm))
+
+```
+
+### We notice that AdaSample Single model Learning gives better Sensitivity for Akt Substrates .We will use the prediction probability from single Model for Akt
+
+# Repeat above steps using kNN classifier in AdaSampling
+
+```{r}
+ final_knn <- c()
+TP <- TN <- FP <- FN <- c()
+for (i in 1:length(fold)) {
+  train.mat <- data.mat[-fold[[i]],]
+  test.mat <- data.mat[fold[[i]],]
+  cls <- data.cls[-fold[[i]]]
+  
+  # index positive and negative instances
+  Ps <- rownames(train.mat)[which(cls == 1)]
+  Ns <- rownames(train.mat)[which(cls == 0)]
+  
+  pred.prob <- adaSample(Ps, Ns, train.mat, test.mat, classifier="knn", C=20)
+  pred <- ifelse(pred.prob[,"P"] > 0.5, 1, 0)
+  final_knn<- c(final_knn,pred.prob[,"P"]  )
+  
+  TP <- c(TP, sum((data.cls.truth[fold[[i]]] == pred)[data.cls.truth[fold[[i]]] == "1"]))
+  TN <- c(TN, sum((data.cls.truth[fold[[i]]] == pred)[data.cls.truth[fold[[i]]] == "0"]))
+  FP <- c(FP, sum((data.cls.truth[fold[[i]]] != pred)[pred == "1"]))
+  FN <- c(FN, sum((data.cls.truth[fold[[i]]] != pred)[pred == "0"]))
+}
+
+sensitivity_knn<-mean(TP/(TP+FN))
+specificity_knn<-mean(TN/(TN+FP))
+Precision_knn  <-mean(TP/(TP+FP))
+F1_Score_knn   <-mean(F1(cbind(TN, FP, TP, FN)))
+print(paste('Overall Sensitivity using KNN is',sensitivity_knn))
+print(paste('Overall Specificty using KNN is',specificity_knn))
+
+
+```
+## Sensitivity for aKT is same using SVM and kNN methods. We will use SVM for Akt substrates
+
+### Our results demonstrate that Adasampling significantly perform better than those without it and in most cases, also outperforms other state-of the art approaches for positive unlabelled learning
+
+##4.2 Classification techniques evaluation on mTOR substrates
+## Prepare mTOR data for AdaSampling
+```{r}
+data.mat <- apply(X = PhosphoMain.mtordata[,1:15], MARGIN = 2, FUN = as.numeric)
+data.cls.truth <- sapply(X = PhosphoMain.mtordata$class, FUN = function(X) {ifelse(X == "1", 1, 0)})
+rownames(data.mat) <- rownames(PhosphoMain.mtordata)
+head(data.mat)
+```
+
+# Apply AdaSampling on mTor with All features along with mtor Motif score
+
+```{r}
+set.seed(1)
+pos <- which(data.cls.truth == 1)
+neg <- which(data.cls.truth == 0)
+data.cls <- data.cls.truth
+k <- 10
+fold <- createFolds(data.cls.truth, k)
+```
+
+```{r}
+
+final_svm.mtor <- c()
+TP <- TN <- FP <- FN <- c()
+
+for (i in 1:length(fold)) {
+  train.mat <- data.mat[-fold[[i]],]
+  test.mat <- data.mat[fold[[i]],]
+  cls <- data.cls[-fold[[i]]]
+  
+  # index positive and negative instances
+  Ps <- rownames(train.mat)[which(cls == 1)]
+  Ns <- rownames(train.mat)[which(cls == 0)]
+  
+  pred.prob <- adaSample(Ps, Ns, train.mat, test.mat, classifier="svm", C=1 )
+  pred <- ifelse(pred.prob[,"P"] > 0.5, 1, 0)
+  final_svm.mtor<- c(final_svm.mtor,pred.prob[,"P"]  )
+  
+  TP <- c(TP, sum((data.cls.truth[fold[[i]]] == pred)[data.cls.truth[fold[[i]]] == "1"]))
+  TN <- c(TN, sum((data.cls.truth[fold[[i]]] == pred)[data.cls.truth[fold[[i]]] == "0"]))
+  FP <- c(FP, sum((data.cls.truth[fold[[i]]] != pred)[pred == "1"]))
+  FN <- c(FN, sum((data.cls.truth[fold[[i]]] != pred)[pred == "0"]))
+}
+
+sensitivity_svm<-mean(TP/(TP+FN))
+specificity_svm<-mean(TN/(TN+FP))
+Precision_svm  <-mean(TP/(TP+FP))
+F1_Score_svm   <-mean(F1(cbind(TN, FP, TP, FN)))
+print(paste('Overall Sensitivity using SVM is',sensitivity_svm))
+print(paste('Overall Specificty using SVM is',specificity_svm))
+
+
+```
+## Create Model using  AdaSampling for ensemble learning  and evaluate dataset using Sensitivity and Specificity
+
+```{r}
+
+final_svm.mtor_ensemble <- c()
+TP <- TN <- FP <- FN <- c()
+for (i in 1:length(fold)) {
+  train.mat <- data.mat[-fold[[i]],]
+  test.mat <- data.mat[fold[[i]],]
+  cls <- data.cls[-fold[[i]]]
+  
+  # index positive and negative instances
+  Ps <- rownames(train.mat)[which(cls == 1)]
+  Ns <- rownames(train.mat)[which(cls == 0)]
+  
+  pred.prob <- adaSample(Ps, Ns, train.mat, test.mat, classifier="svm", C=20 )
+  pred <- ifelse(pred.prob[,"P"] > 0.5, 1, 0)
+  final_svm.mtor_ensemble<- c(final_svm.mtor_ensemble,pred.prob[,"P"]  )
+  
+  TP <- c(TP, sum((data.cls.truth[fold[[i]]] == pred)[data.cls.truth[fold[[i]]] == "1"]))
+  TN <- c(TN, sum((data.cls.truth[fold[[i]]] == pred)[data.cls.truth[fold[[i]]] == "0"]))
+  FP <- c(FP, sum((data.cls.truth[fold[[i]]] != pred)[pred == "1"]))
+  FN <- c(FN, sum((data.cls.truth[fold[[i]]] != pred)[pred == "0"]))
+}
+
+sensitivity_svm<-mean(TP/(TP+FN))
+specificity_svm<-mean(TN/(TN+FP))
+Precision_svm  <-mean(TP/(TP+FP))
+F1_Score_svm   <-mean(F1(cbind(TN, FP, TP, FN)))
+print(paste('Overall Sensitivity using SVM is',sensitivity_svm))
+print(paste('Overall Specificty using SVM is',specificity_svm))
+
+
+```
+
+## We notice that for mTOR data, AdaSample ensemble gives better sensitivity
+
+# Repeat above steps using kNN classifier for mTOR in AdaSampling
+
+```{r}
+ final_knn <- c()
+TP <- TN <- FP <- FN <- c()
+for (i in 1:length(fold)) {
+  train.mat <- data.mat[-fold[[i]],]
+  test.mat <- data.mat[fold[[i]],]
+  cls <- data.cls[-fold[[i]]]
+  
+  # index positive and negative instances
+  Ps <- rownames(train.mat)[which(cls == 1)]
+  Ns <- rownames(train.mat)[which(cls == 0)]
+  
+  pred.prob <- adaSample(Ps, Ns, train.mat, test.mat, classifier="knn", C=20)
+  pred <- ifelse(pred.prob[,"P"] > 0.5, 1, 0)
+  final_knn<- c(final_knn,pred.prob[,"P"]  )
+  
+  TP <- c(TP, sum((data.cls.truth[fold[[i]]] == pred)[data.cls.truth[fold[[i]]] == "1"]))
+  TN <- c(TN, sum((data.cls.truth[fold[[i]]] == pred)[data.cls.truth[fold[[i]]] == "0"]))
+  FP <- c(FP, sum((data.cls.truth[fold[[i]]] != pred)[pred == "1"]))
+  FN <- c(FN, sum((data.cls.truth[fold[[i]]] != pred)[pred == "0"]))
+}
+
+sensitivity_knn<-mean(TP/(TP+FN))
+specificity_knn<-mean(TN/(TN+FP))
+Precision_knn  <-mean(TP/(TP+FP))
+F1_Score_knn   <-mean(F1(cbind(TN, FP, TP, FN)))
+print(paste('Overall Sensitivity using KNN is',sensitivity_knn))
+print(paste('Overall Specificty using KNN is',specificity_knn))
+
+
+ 
+```
+4. Performance analysis.
+## We will use the results from SVM model (ensemble)  for mTOR as that returns better Evaluation Metrics
+
+# Compare 2016 predictions to the prediction in our previous report (Prediction_2016.xlsx)
+
+### Load Akt & mTOR sheets from input Prediction_2016.xlsx
+```{r}
+
+#install.packages("openxlsx")
+library(openxlsx)
+#setwd("E:/Rtutorials/Data_Project_2/Data_Project_2/Datasets")
+Akt_dat_2016 <- read.xlsx("Prediction_2016.xlsx", sheet = 1)
+mtor_dat_2016 <- read.xlsx("Prediction_2016.xlsx", sheet = 2)
+```
+
+
+```{r}
+# Get result of the probabilities caculated by Adasample SVM in a data frame
+
+##akt use single model results
+final_akt_prob <- as.data.frame(final_svm.akt_single)
+id<- rownames(final_akt_prob)
+final_akt_prob <- cbind(final_akt_prob,id)
+
+##mtor use ensemble results
+final_mtor_prob <- as.data.frame(final_svm.mtor_ensemble)
+id<- rownames(final_mtor_prob)
+final_mtor_prob <- cbind(final_mtor_prob,id)
+
+
+# Convert identifier field in Main data set and variable 'GeneSymbol' to upper case for the MERGE to work Correctly
+
+##akt
+
+final_akt_prob$id <- toupper(final_akt_prob$id)
+Akt_dat_2016$GeneSymbol <- toupper(Akt_dat_2016$GeneSymbol )
+
+##mtor
+
+final_mtor_prob$id <- toupper(final_mtor_prob$id)
+mtor_dat_2016$GeneSymbol <- toupper(mtor_dat_2016$GeneSymbol )
+
+# Concatenate variable 'GeneSymbol' & 'Phosphorylation site'  with ';' from Prediction_2016 
+
+Akt_dat_2016$Id <- paste(Akt_dat_2016$GeneSymbol,as.character(Akt_dat_2016$Phosphorylation.site) ,sep =";")
+Akt_dat_2016$Id <-paste(Akt_dat_2016$Id,";" , sep ="")
+
+mtor_dat_2016$Id <- paste(mtor_dat_2016$GeneSymbol,as.character(mtor_dat_2016$Phosphorylation.site) ,sep =";")
+mtor_dat_2016$Id <-paste(mtor_dat_2016$Id,";" , sep ="")
+
+# Merge new & old prediction dataset in  a common data frame by Identifier to compare Prediction Probability
+
+final.akt<- merge(Akt_dat_2016, final_akt_prob, by.x = "Id", by.y = "id")
+final.mtor<- merge(mtor_dat_2016, final_mtor_prob, by.x = "Id", by.y = "id")
+
+# We notice only 8141 aKT sites substrates match in Prediction_2016.xls. We will continue comparion on available records
+
+# Generate a plot of Residual Difference against the predicted probability in 2016 excel
+
+final.akt$Diff <- final.akt$Full.model.predict - final.akt$final_svm.akt_single
+final.mtor$Diff <- final.mtor$Full.model.predict - final.mtor$final_svm.mtor_ensemble
+
+plot(final.akt$Full.model.predict, final.akt$Diff, ylim=c(-1,1), col="Green", xlab="Identifiers' Probability 2016", ylab="Residual Value 2018", main="Akt Substrates Residual Plot")
+abline(h=0, col="black")
+
+
+plot(final.mtor$Full.model.predict, final.mtor$Diff, ylim=c(-1,1), col="Blue", xlab="Identifiers' Probability 2016", ylab="Residual Value 2018", main="mTOR Substrates Residual Plot")
+abline(h=0, col="black")
+
+```
+
+# Calculate Corelation between 2 Sets of Akt 
+```{r}
+
+# Calculate corelation between the Prediction probability calculated and provided(2016)
+
+print("Corelation between  prediction 2016 and current results for AKT Substrates ") 
+print(cor(final.akt$Full.model.predict,final.akt$final_svm.akt_single))
+
+# Calculate 'Mann Whitney' Test 
+print(wilcox.test(final.akt$Full.model.predict,final.akt$final_svm.akt_single))
+
+```
+
+# Calculate corelation between 2 Sets of mTOR 
+```{r}
+
+# Calculate corelation between the Prediction probability calculated and provided(2016)
+
+print("Corelation between  prediction 2016 and current results for MTOR Substrates ") 
+print(cor(final.mtor$Full.model.predict,final.mtor$final_svm.mtor_ensemble))
+
+# Calculate 'Mann Whitney' Test 
+print(wilcox.test(final.mtor$Full.model.predict,final.mtor$final_svm.mtor_ensemble))
+
+```
+
+# There is a high corelation for both Akt & mTOR substrates when comparing current results with that of 2016
+
+# Generate final Excel with Predicted Probability of each phosphorylation sites (total 12062) been a substrate of Akt or mTOR
+
+```{r}
+
+# sort by descending order on the probability
+final.akt.2018 <- final_akt_prob[order(-final_svm.akt_single),]
+final.mtor.2018 <- final_mtor_prob[order(-final_svm.mtor_ensemble),]
+
+# Removing column Motif Predict,Phosphoproteome predict,Delta from the data frame as they have not been calulcated under scope.
+# Only Full Model Predict has been calculated
+
+final.akt.2018$Full.model.predict <-final.akt.2018$final_svm.akt_single
+final.akt.2018$final_svm.akt_single<-NULL
+
+final.mtor.2018$Full.model.predict <-final.mtor.2018$final_svm.mtor_ensemble
+final.mtor.2018$final_svm.mtor_ensemble<-NULL
+
+# Generate final Excel output for Prediction Probability aKT & mTOR Substrates
+setwd("E:/Rtutorials/Data_Project_2/Data_Project_2/Datasets")
+
+wb <- createWorkbook("Prediction_2018_Group16.xlsx")
+addWorksheet(wb, "Akt_prediction")
+addWorksheet(wb, "mTOr_prediction")
+writeData(wb, "Akt_prediction", final.akt.2018)
+writeData(wb, "mTOr_prediction", final.mtor.2018)
+saveWorkbook(wb, "Prediction_2018_Group16.xlsx", overwrite = TRUE)
+```
+
+# Calculate a predicted list of substrates for Akt and mTOR, respectively
+### We have considered probability greater than 0.5 as threshold to classify a subtrate as Akt and mTOR 
+```{r}
+Predicted_AKT <- filter(final.akt.2018,Full.model.predict>=0.5)
+Predicted_MTOR <- filter(final.mtor.2018,Full.model.predict>=0.5)
+
+###Rename the column from 'id' to 'Identifier'
+colnames(Predicted_AKT)[1] <- "Identifier"
+colnames(Predicted_MTOR)[1] <- "Identifier"
+
+##set the poath of file export
+setwd("E:/Rtutorials/Data_Project_2/Data_Project_2/Datasets")
+
+##Write output files
+write.table(Predicted_AKT[1], file = "Predicted AKT substrates.csv",row.names = FALSE,col.names=TRUE)
+write.table(Predicted_MTOR[1], file = "Predicted MTOR substrates.csv",row.names = FALSE,col.names=TRUE)
+```
+
+##Reference:
+###[1]Yang, P., Humphrey, S.J., James, D.E., Yang, Y.H. and Jothi, R., 2015. Positive-unlabeled ensemble learning for kinase substrate prediction from dynamic phosphoproteomics data. Bioinformatics, 32(2), pp.252-259
+###[2]Pengyi Yang1, Wei Liu2, Jean Yang1 2017. Positive unlabeled learning via wrapper-based adaptive sampling
+###[3]https://en.wikipedia.org/wiki/Position_weight_matrix
